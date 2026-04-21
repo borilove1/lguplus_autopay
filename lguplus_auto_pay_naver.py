@@ -18,7 +18,6 @@ card_name = os.getenv("CARD_NAME")
 card_birth = os.getenv("CARD_BIRTH")
 card_exp = os.getenv("CARD_EXP")
 pay_amount = os.getenv("PAY_AMOUNT", "5999")
-discord_webhook_url = os.getenv("DISCORD_WEBHOOK_URL")
 tg_token = os.getenv("TELEGRAM_BOT_TOKEN")
 tg_chat_id = os.getenv("TELEGRAM_CHAT_ID")
 
@@ -43,28 +42,6 @@ DEBUG_DIR = Path(__file__).parent / "debug_runtime"
 # ============================================================
 # 알림 / 디버그
 # ============================================================
-def send_discord(message: str, status: str = "success"):
-    if not discord_webhook_url:
-        print("[!] DISCORD_WEBHOOK_URL 미설정 → 알림 생략")
-        return
-    if status == "success":
-        title, color = "✅ LG U+ 납부 완료", 0x00FF00
-    elif status == "retry":
-        title, color = "🔄 LG U+ 납부 재시도", 0xFFA500
-    else:
-        title, color = "❌ LG U+ 납부 오류", 0xFF0000
-    payload = {"embeds": [{"title": title, "description": message, "color": color,
-                           "timestamp": dt.datetime.now(dt.timezone.utc).isoformat()}]}
-    try:
-        resp = requests.post(discord_webhook_url, json=payload, timeout=10)
-        if resp.status_code in (200, 204):
-            print("Discord 알림 전송 완료")
-        else:
-            print(f"[!] Discord 실패: {resp.status_code}")
-    except Exception as e:
-        print(f"[!] Discord 요청 오류: {e}")
-
-
 def send_telegram(message: str) -> bool:
     if not tg_token or not tg_chat_id:
         print("[!] Telegram 설정 없음")
@@ -317,7 +294,6 @@ def fill_card_and_submit(page):
     except Exception:
         msg = "카드사 자동결제 처리날이라 프로세스를 종료합니다."
         print(msg)
-        send_discord(msg, status="success")
         send_telegram("✅ 카드사 자동결제 처리일 — 스크립트 정상 종료")
         return False
 
@@ -561,17 +537,15 @@ with sync_playwright() as p:
             print(f"[시도 {attempt}/{MAX_LOGIN_ATTEMPTS} 실패] {e}")
             now = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             if attempt < MAX_LOGIN_ATTEMPTS:
-                send_discord(
-                    f"{attempt}차 시도 실패 → 재시도.\n"
-                    f"오류: ```{e}```\n발생 시각: {now}",
-                    status="retry",
+                send_telegram(
+                    f"🔄 {attempt}차 시도 실패 → 재시도\n"
+                    f"오류: {e}\n시각: {now}"
                 )
                 time.sleep(5)
             else:
-                send_discord(
-                    f"모든 재시도 실패 ({MAX_LOGIN_ATTEMPTS}회).\n"
-                    f"마지막 오류: ```{e}```\n발생 시각: {now}",
-                    status="error",
+                send_telegram(
+                    f"❌ 모든 재시도 실패 ({MAX_LOGIN_ATTEMPTS}회)\n"
+                    f"마지막 오류: {e}\n시각: {now}"
                 )
                 raise SystemExit(1)
 
@@ -586,18 +560,12 @@ with sync_playwright() as p:
 
         now = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         if verify_payment_success(page):
-            send_discord(
-                f"납부 금액: **{pay_amount}원**\n처리 시각: {now}",
-                status="success",
-            )
             send_telegram(f"✅ 납부 완료: {pay_amount}원 ({now})")
         else:
-            msg = (
-                f"결제 완료 여부를 확정하지 못함. 카드사/LG U+ 수동 확인 필요.\n"
+            send_telegram(
+                f"⚠️ 결제 완료 여부 미확정 — 카드사/LG U+ 수동 확인 필요\n"
                 f"확인 시각: {now}"
             )
-            send_discord(msg, status="error")
-            send_telegram(f"⚠️ {msg}")
             try:
                 dump_debug(page, "verify_unconfirmed")
             except Exception:
@@ -605,12 +573,10 @@ with sync_playwright() as p:
 
     except Exception as exc:
         now = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        send_discord(
-            f"결제/인증 단계 오류 (중복결제 방지를 위해 재시도하지 않음)\n"
-            f"오류: ```{exc}```\n발생 시각: {now}",
-            status="error",
+        send_telegram(
+            f"❌ 결제/인증 오류 (중복결제 방지를 위해 재시도하지 않음)\n"
+            f"오류: {exc}\n시각: {now}"
         )
-        send_telegram(f"❌ 결제/인증 오류: {exc}")
         try:
             if page:
                 dump_debug(page, "fatal_error")

@@ -2,7 +2,7 @@
 
 카카오 로그인 → LG U+ 결제페이지 → 카드정보 입력 → 휴대폰 본인인증(SMS OTP) 까지 자동으로 처리하는 개인용 월납 자동화 스크립트.
 
-OTP 는 **Telegram 봇**을 통해 사용자와 양방향으로 주고받으며, 실행 결과는 Discord Webhook 으로 알림이 전송됩니다.
+OTP 수신·재전송·취소 등 모든 상호작용과 실행 결과 알림은 **Telegram 봇** 하나로 처리됩니다.
 
 > ⚠️ **면책** — 본인 명의·본인 카드로 **본인 계정** 에 자동납부하기 위한 개인용 템플릿입니다. 타인 계정 자동화, 크롤링, 약관 위반 용도 등으로 사용하지 마세요. 사이트 구조 변경 시 동작하지 않을 수 있고, 이중결제 등 오작동 책임은 사용자에게 있습니다.
 
@@ -20,14 +20,13 @@ OTP 는 **Telegram 봇**을 통해 사용자와 양방향으로 주고받으며,
 - 카드사 **자동결제일** 이면 입력란이 나타나지 않음 → 정상 종료
 - 로그인~납부버튼까지만 재시도(2회). **카드정보 입력 이후는 재시도하지 않음** (이중결제 방지).
 - 실패/미확정 시 스크린샷 + HTML 을 `debug_runtime/` 에 저장
-- Discord 에 성공/재시도/실패 알림, Telegram 에 단계별 진행 안내
+- Telegram 에 단계별 진행 안내 + 성공/재시도/실패 알림
 
 ## 요구사항
 
 - Python 3.10+
 - Chromium (Playwright 에서 자동 설치)
 - 텔레그램 봇 토큰 + 채팅 ID
-- Discord Webhook URL (선택)
 
 ## 설치
 
@@ -56,7 +55,6 @@ playwright install chromium
    | `KAKAO_ID` / `KAKAO_PW` | 카카오 계정 (LG U+ 연동용) |
    | `CARD_NUM` / `CARD_NAME` / `CARD_BIRTH` / `CARD_EXP` | 결제 카드 정보 |
    | `PAY_AMOUNT` | 납부 금액 (기본 5999) |
-   | `DISCORD_WEBHOOK_URL` | 결과 알림 Webhook (없으면 스킵) |
    | `TELEGRAM_BOT_TOKEN` | `@BotFather` 로 발급 |
    | `TELEGRAM_CHAT_ID` | `@userinfobot` 로 확인 |
 
