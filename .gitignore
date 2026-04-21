@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.Python
+
+# Virtual envs
+venv/
+.venv/
+env/
+
+# Credentials / secrets
+.env
+.env.*.local
+kakao_token.json
+kakao_token copy.json
+*.pem
+*.key
+
+# Claude Code workspace metadata (contains local paths, server IPs, etc.)
+.claude/
+
+# Runtime artifacts
+cron.log
+*.log
+debug_runtime/
+*.bak
+*.bak.*
+lguplus_auto_pay_naver.py.bak.*
+
+# Screenshots / HTML dumps
+*.png
+*.html
+!README*.png
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
