@@ -38,6 +38,37 @@ STATUS_KEYWORDS = {"/status", "상태"}
 SCRIPT_START_TS = int(time.time())
 DEBUG_DIR = Path(__file__).parent / "debug_runtime"
 
+# LG U+ API 응답 캐치 — 결제 성공/실패 판정의 최종 근거
+# (페이지 텍스트 매칭은 false positive 발생 사례 있었음)
+#   PUT  /uhdc/fo/mbrm/auth/mobile/v1/auth-num:verify     → {"isSuccess":"Y","message":...}
+#   POST /uhdc/fo/myin/blpy/recp/v1/online-payment-comple-auth
+#        → {"rsltYn":"Y","messageCode":"00","message":"요금이 납부되었습니다."}
+API_STATE = {"otp_verify": None, "payment": None}
+
+
+def _make_api_handler(state: dict):
+    def handler(resp):
+        try:
+            url = resp.url
+            method = resp.request.method
+            if "auth-num:verify" in url and method == "PUT":
+                body = resp.json()
+                state["otp_verify"] = body
+                print(
+                    f"[API] OTP verify isSuccess={body.get('isSuccess')} "
+                    f"msg={body.get('message')}"
+                )
+            elif "online-payment-comple-auth" in url and method == "POST":
+                body = resp.json()
+                state["payment"] = body
+                print(
+                    f"[API] 결제 rsltYn={body.get('rsltYn')} "
+                    f"code={body.get('messageCode')} msg={body.get('message')}"
+                )
+        except Exception as e:
+            print(f"[API] response parse fail: {e}")
+    return handler
+
 
 # ============================================================
 # 알림 / 디버그
@@ -237,6 +268,7 @@ def login_and_open_pay(p):
         locale="ko-KR",
     )
     page = context.new_page()
+    page.on("response", _make_api_handler(API_STATE))
     try:
         delay_login = random.randrange(5, 7)
         delay_pay_open = random.randrange(5, 10)
@@ -386,6 +418,18 @@ def _restart_phone_auth(page) -> bool:
 
 
 def _enter_otp_and_confirm(page, otp: str):
+    # OTP 입력 필드를 포함하는 모달로 확인 버튼 클릭 스코프 좁히기 (다른 모달의 확인 오클릭 방지)
+    auth_modal_id = page.evaluate(
+        """
+        () => {
+            const inp = document.querySelector('#uplus-autnNo');
+            if (!inp) return null;
+            const m = inp.closest('[id$="___BV_modal_outer_"]');
+            return m ? m.id : null;
+        }
+        """
+    )
+
     otp_input = page.locator("#uplus-autnNo")
     otp_input.wait_for(state="visible", timeout=5000)
     otp_input.click()
@@ -393,13 +437,36 @@ def _enter_otp_and_confirm(page, otp: str):
     print(f"[인증] 인증번호 입력: {otp}")
     page.wait_for_timeout(1000)
 
-    confirm = page.locator('button.c-btn-solid-1-m:has-text("확인")').last
+    if auth_modal_id:
+        confirm = page.locator(
+            f'#{auth_modal_id} button.c-btn-solid-1-m:has-text("확인")'
+        ).last
+    else:
+        confirm = page.locator('button.c-btn-solid-1-m:has-text("확인")').last
     for _ in range(10):
         if confirm.is_enabled():
             break
         page.wait_for_timeout(500)
+
+    # OTP 검증 응답 대기를 위해 이전 결과 초기화 후 클릭
+    API_STATE["otp_verify"] = None
     confirm.click()
     print("[인증] 확인 클릭 (OTP 검증)")
+
+    # OTP 검증 API 응답 대기 (최대 15초)
+    # Playwright sync API: 이벤트는 다른 Playwright 작업 중에만 발화 →
+    # page.wait_for_timeout() 으로 이벤트 펌프를 유지해야 핸들러가 호출됨
+    end = time.time() + 15
+    while time.time() < end and API_STATE.get("otp_verify") is None:
+        page.wait_for_timeout(300)
+    verify = API_STATE.get("otp_verify")
+    if verify is None:
+        print("[인증] OTP 검증 API 응답 미수신 (계속 진행)")
+    elif verify.get("isSuccess") != "Y":
+        msg = verify.get("message") or "응답 메시지 없음"
+        raise RuntimeError(f"OTP 검증 실패 (API): isSuccess={verify.get('isSuccess')} / {msg}")
+    else:
+        print("[인증] OTP 검증 성공 (API isSuccess=Y)")
 
 
 def _notify_sms_sent(prefix: str):
@@ -490,28 +557,91 @@ def handle_phone_auth(page):
             raise RuntimeError("자동 재인증 실패")
 
     dismiss_info_popup(page, max_wait_ms=3000)
+
+    # 결제 API 응답 대기를 위해 이전 결과 초기화
+    API_STATE["payment"] = None
+
     _enter_otp_and_confirm(page, otp)
 
-    matched = dismiss_info_popup(page, max_wait_ms=15000)
-    if not matched:
-        print("[경고] 완료 팝업 미감지 — 디버그 덤프 저장")
-        dump_debug(page, "complete_popup_miss")
-    page.wait_for_timeout(6000)
+    # __BVID__844 "휴대폰 인증이 완료되었습니다" 팝업 닫기 → 자동으로 결제 API 호출됨
+    auth_complete = dismiss_info_popup(page, max_wait_ms=15000)
+    if not auth_complete:
+        print("[경고] 인증완료 팝업 미감지 — 디버그 덤프 저장")
+        dump_debug(page, "auth_complete_popup_miss")
+
+    # 결제 API (online-payment-comple-auth) 응답 대기 (최대 30초)
+    # rsltYn / message 가 결제 성공/실패의 최종 근거
+    print("[결제] 결제 처리 응답 대기 중...")
+    end = time.time() + 30
+    while time.time() < end and API_STATE.get("payment") is None:
+        page.wait_for_timeout(500)
+    payment = API_STATE.get("payment")
+    if payment is None:
+        print("[결제] 30초 내 결제 API 응답 미수신")
+        dump_debug(page, "payment_api_timeout")
+    else:
+        print(
+            f"[결제] API 응답 수신: rsltYn={payment.get('rsltYn')} "
+            f"code={payment.get('messageCode')} message={payment.get('message')!r}"
+        )
+
+    # 결제 결과 팝업 (예: "요금이 납부되었습니다") 닫기 — 없어도 OK
+    dismiss_info_popup(page, max_wait_ms=10000)
+    page.wait_for_timeout(2000)
 
 
 # ============================================================
 # 결제 완료 검증
 # ============================================================
-def verify_payment_success(page) -> bool:
-    success_texts = ["납부가 완료", "결제가 완료", "납부 완료", "결제 완료", "정상 처리"]
+def verify_payment_success(page) -> Tuple[bool, str]:
+    """결제 성공 여부 + 사유 메시지 반환.
+    우선순위:
+      1) 결제 API 응답 (online-payment-comple-auth) — rsltYn=Y/N 가 진실
+      2) OTP 검증 API 응답 — isSuccess=N 이면 결제 자체 미진행
+      3) 페이지 텍스트 매칭 (백업)
+    페이지에 단서가 없으면 미확정(False) — 인증 모달 사라짐을 성공으로 간주하던 폴백은 제거됨.
+    """
+    payment = API_STATE.get("payment")
+    if payment:
+        rsltYn = payment.get("rsltYn")
+        message = payment.get("message") or ""
+        code = payment.get("messageCode")
+        if rsltYn == "Y":
+            return (True, f"API rsltYn=Y · {message}")
+        return (False, f"API rsltYn={rsltYn} · code={code} · {message}")
+
+    verify = API_STATE.get("otp_verify")
+    if verify and verify.get("isSuccess") != "Y":
+        return (False, f"OTP 검증 실패: {verify.get('message')}")
+
+    success_texts = [
+        "요금이 납부되었습니다",
+        "납부가 완료",
+        "결제가 완료",
+        "납부 완료",
+        "결제 완료",
+        "정상 처리",
+    ]
     for txt in success_texts:
         if page.locator(f'text="{txt}"').count() > 0:
-            print(f"[검증] 성공 텍스트 발견: {txt}")
-            return True
-    if page.locator('#uplus-autnNo').count() == 0:
-        print("[검증] 인증 모달 사라짐")
-        return True
-    return False
+            return (True, f"페이지 텍스트 매칭(성공): '{txt}'")
+
+    failure_texts = [
+        "결제가 실패",
+        "결제 실패",
+        "납부 실패",
+        "거절",
+        "한도 초과",
+        "한도초과",
+        "잔액 부족",
+        "잔액부족",
+        "처리되지 않",
+    ]
+    for txt in failure_texts:
+        if page.locator(f'text="{txt}"').count() > 0:
+            return (False, f"페이지 텍스트 매칭(실패): '{txt}'")
+
+    return (False, "결제 결과 미확정 — API 응답 없음 & 텍스트 매칭 실패")
 
 
 # ============================================================
@@ -559,11 +689,13 @@ with sync_playwright() as p:
         handle_phone_auth(page)
 
         now = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        if verify_payment_success(page):
-            send_telegram(f"✅ 납부 완료: {pay_amount}원 ({now})")
+        success, detail = verify_payment_success(page)
+        if success:
+            send_telegram(f"✅ 납부 완료: {pay_amount}원 ({now})\n{detail}")
         else:
             send_telegram(
-                f"⚠️ 결제 완료 여부 미확정 — 카드사/LG U+ 수동 확인 필요\n"
+                f"⚠️ 결제 미확정/실패 — 카드사/LG U+ 수동 확인 필요\n"
+                f"세부: {detail}\n"
                 f"확인 시각: {now}"
             )
             try:

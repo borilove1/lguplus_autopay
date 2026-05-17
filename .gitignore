@@ -25,6 +25,8 @@ kakao_token copy.json
 cron.log
 *.log
 debug_runtime/
+explore_dumps/
+explore_auth.py
 *.bak
 *.bak.*
 lguplus_auto_pay_naver.py.bak.*
